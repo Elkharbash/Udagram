@@ -1,0 +1,74 @@
+Description: >
+  Nabel Elkharbash / Bastion host configuration
+
+Parameters:
+  EnvironmentName:
+    Description: A prefix to all resource names
+    Type: String
+    Default: Udagram
+
+  InstanceType:
+    Type: String
+    Default: t2.micro
+
+  AMI:
+    Type: String
+    Default: ami-06878d265978313ca
+  
+  KeyPair:
+    Type: AWS::EC2::KeyPair::KeyName
+    Default: UdagramKeyPair
+
+Resources:
+  JumpSG:
+    Type: AWS::EC2::SecurityGroup
+    Properties:
+      GroupDescription: Allow ssh connection to the jump box
+      VpcId:
+        Fn::ImportValue:
+          !Sub ${EnvironmentName}-VPCID
+      SecurityGroupIngress:
+        - IpProtocol: tcp
+          FromPort: 22
+          ToPort: 22
+          CidrIp: 0.0.0.0/0 # double confrim from the requirements
+      SecurityGroupEgress:
+        - IpProtocol: tcp
+          FromPort: 0
+          ToPort: 65535
+          CidrIp: 0.0.0.0/0
+          
+  JumpEIP:
+    Type: AWS::EC2::EIP
+    Properties:
+      Domain:
+        Fn::ImportValue: 
+          !Sub ${EnvironmentName}-VPCID
+
+  JumpBoxServer:
+    Type: AWS::EC2::Instance
+    Properties:
+      InstanceType: !Ref InstanceType
+      ImageId: !Ref AMI
+      KeyName: !Ref KeyPair
+      SecurityGroupIds:
+        - !Ref JumpSG
+      SubnetId:
+        Fn::ImportValue: !Sub ${EnvironmentName}-PUBSN-1
+      BlockDeviceMappings:
+      - DeviceName: "/dev/sdk"
+        Ebs:
+          VolumeSize: '10'
+       
+  EIPAssociation:
+    Type: AWS::EC2::EIPAssociation
+    Properties:
+      InstanceId: !Ref JumpBoxServer
+      AllocationId: !GetAtt JumpEIP.AllocationId
+
+Outputs:
+  JumpBoxIP:
+    Description: The public IP of the jump box
+    Value: !GetAtt JumpEIP.PublicIp
+    Export:
+      Name: !Sub ${EnvironmentName}-JumpBox-IP

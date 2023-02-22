@@ -1,0 +1,186 @@
+Description: >
+  This stack is associated to the Udagram infrastructure, it is used to create the instances and deploy the WebApp
+
+Parameters:
+
+  EnvironmentName:
+    Description: A prefix to the resource names
+    Type: String
+    Default: Udagram
+
+  AMI:
+    Description: AWS Ubuntu ID
+    Type: String
+    Default: ami-06878d265978313ca
+
+  InstanceType:
+    Description: The AMI Instance type
+    Type: String
+    Default: t2.micro
+
+  myLaunchTemplateVersionNumber:
+    Type: String
+    Default: "1"
+
+Resources:
+
+  UdacityS3ReadOnlyEC2:
+    Type: AWS::IAM::Role
+    Properties:
+      ManagedPolicyArns:
+        - arn:aws:iam::aws:policy/AmazonS3ReadOnlyAccess
+        - arn:aws:iam::aws:policy/AmazonSSMFullAccess
+      AssumeRolePolicyDocument:
+        Version: 2012-10-17
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service:
+                - ec2.amazonaws.com
+            Action:
+              - sts:AssumeRole
+      Path: '/'
+
+  RoleProfile:
+    Type: AWS::IAM::InstanceProfile
+    Properties: 
+      Roles:
+        - !Ref UdacityS3ReadOnlyEC2
+
+  LBSecGroup:
+    Type: AWS::EC2::SecurityGroup
+    Properties:
+      GroupDescription: Allow http to the loadbalancer
+      SecurityGroupEgress:
+        - IpProtocol: tcp
+          FromPort: 80
+          ToPort: 80
+          CidrIp: 0.0.0.0/0
+      SecurityGroupIngress:
+        - IpProtocol: tcp
+          FromPort: 80
+          ToPort: 80
+          CidrIp: 0.0.0.0/0
+      VpcId: 
+        Fn::ImportValue: !Sub ${EnvironmentName}-VPCID
+    
+  WebAppSecGroup:
+    Type: AWS::EC2::SecurityGroup
+    Properties:
+      GroupDescription: Allow http to our hosts and ssh from local only
+      SecurityGroupIngress:
+        - IpProtocol: tcp
+          FromPort: 80
+          ToPort: 80
+          CidrIp: 0.0.0.0/0
+        - IpProtocol: tcp
+          FromPort: 22
+          ToPort: 22
+          CidrIp: 0.0.0.0/0
+      SecurityGroupEgress:
+        - IpProtocol: tcp
+          FromPort: 0
+          ToPort: 65535
+          CidrIp: 0.0.0.0/0
+      VpcId: 
+        Fn::ImportValue: !Sub ${EnvironmentName}-VPCID
+
+  WebAppLaunchTemplate: # The launch template should always be defined prior to the AutoScalingGroup
+    Type: AWS::EC2::LaunchTemplate
+    Properties: 
+      LaunchTemplateData:
+        UserData:
+          Fn::Base64: !Sub |
+            #!/bin/bash
+            apt-get update -y
+            sudo apt install wget
+            apt-get install apache2 -y
+            curl "https://awscli.amazonaws.com/awscli-exe-linux-x86_64.zip" -o "awscliv2.zip"
+            sudo apt install unzip
+            unzip awscliv2.zip
+            sudo ./aws/install
+            cd /var/www/html
+            rm index.html
+            wget https://udagram-nabel-devops.s3.amazonaws.com/index.html
+            systemctl start apache2.service            
+        ImageId: !Ref AMI
+        #KeyName: !Ref KeyPair #delete it after creation
+        IamInstanceProfile:
+          Name: !Ref RoleProfile
+        SecurityGroupIds:
+          - !GetAtt WebAppSecGroup.GroupId #Troubleshoot this
+        InstanceType: !Ref InstanceType
+        BlockDeviceMappings:
+        - DeviceName: "/dev/sdk"
+          Ebs:
+            VolumeSize: 10
+            DeleteOnTermination: true
+
+  WebAppASG: #This come after the launch template config.
+    Type: AWS::AutoScaling::AutoScalingGroup
+    Properties: 
+      AutoScalingGroupName: !Sub ${EnvironmentName}-AutoScalingGroup
+      LaunchTemplate:
+        LaunchTemplateId: !Ref WebAppLaunchTemplate
+        Version: !Ref myLaunchTemplateVersionNumber
+      VPCZoneIdentifier:
+        - Fn::ImportValue: !Sub ${EnvironmentName}-PrivateSubnets
+      MinSize: "3"
+      MaxSize: "5"
+      TargetGroupARNs:
+        - !Ref WebAppTargetGroup
+      HealthCheckGracePeriod: 60 #60 seconds
+      HealthCheckType: ELB
+
+  WebAppTargetGroup:
+    Type: AWS::ElasticLoadBalancingV2::TargetGroup
+    Properties:
+      HealthCheckIntervalSeconds: 10
+      HealthCheckPath: /
+      HealthCheckProtocol: HTTP
+      HealthCheckTimeoutSeconds: 8
+      HealthyThresholdCount: 2
+      Port: 80
+      Protocol: HTTP
+      UnhealthyThresholdCount: 5
+      VpcId:
+        Fn::ImportValue:
+          !Sub ${EnvironmentName}-VPCID
+
+  WebAppLB:
+    Type: AWS::ElasticLoadBalancingV2::LoadBalancer
+    Properties:
+      Subnets:
+      - Fn::ImportValue: !Sub "${EnvironmentName}-PUBSN-1"
+      - Fn::ImportValue: !Sub "${EnvironmentName}-PUBSN-2"
+      SecurityGroups:
+      - !Ref LBSecGroup
+
+  Listener:
+    Type: AWS::ElasticLoadBalancingV2::Listener
+    Properties:
+      DefaultActions:
+        - Type: forward
+          TargetGroupArn: !Ref WebAppTargetGroup
+      LoadBalancerArn: !Ref WebAppLB
+      Port: 80
+      Protocol: HTTP
+      
+  ALBListenerRule:
+    Type: AWS::ElasticLoadBalancingV2::ListenerRule
+    Properties:
+      Actions:
+        - Type: forward
+          TargetGroupArn: !Ref WebAppTargetGroup
+      Conditions:
+      - Field: path-pattern
+        Values: [/]
+      ListenerArn: !Ref Listener
+      Priority: 1
+
+Outputs:
+  AppUrl:
+    Description: The URL of the web application
+    Value: !Sub http://${WebAppLB.DNSName}
+    Export:
+      Name: !Sub ${EnvironmentName}-App-URL

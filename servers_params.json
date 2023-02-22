@@ -1,0 +1,16 @@
+[
+    {
+        "ParameterKey": "EnvironmentName",
+        "ParameterValue":"Udagram"
+    },
+    {
+        "ParameterKey": "AMI",
+        "ParameterValue":"ami-06878d265978313ca"
+    },
+    {
+        "ParameterKey": "InstanceType",
+        "ParameterValue":"t2.micro"
+    }
+    
+
+]
